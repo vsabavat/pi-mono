@@ -660,7 +660,11 @@ async function generateFinalization(ctx: ExtensionContext): Promise<Finalization
 	return generateFinalizationFromConversation(conversation, projectMemory, ctx);
 }
 
-async function finalizeSession(ctx: ExtensionContext, sessionId: string): Promise<void> {
+async function finalizeSession(
+	ctx: ExtensionContext,
+	sessionId: string,
+	options?: { clearActive?: boolean; sessionFile?: string | null },
+): Promise<void> {
 	ctx.ui.setStatus("memory", ctx.ui.theme.fg("warning", "finalizing..."));
 
 	const output = await generateFinalization(ctx);
@@ -688,10 +692,11 @@ async function finalizeSession(ctx: ExtensionContext, sessionId: string): Promis
 	// Check if compaction needed
 	await checkAndCompactMemory(ctx.cwd, ctx);
 
-	// Update session state
+	const clearActive = options?.clearActive !== false;
+	const sessionFile = options?.sessionFile ?? null;
 	writeSessionState(ctx.cwd, {
-		activeSessionId: null,
-		sessionFile: null,
+		activeSessionId: clearActive ? null : sessionId,
+		sessionFile: clearActive ? null : sessionFile,
 		lastEventTs: Date.now(),
 		finalized: true,
 	});
@@ -880,6 +885,11 @@ export default function memoryProtocolExtension(pi: ExtensionAPI) {
 	pi.on("turn_end", async (_event, ctx) => {
 		const state = readSessionState(ctx.cwd);
 		state.lastEventTs = Date.now();
+		state.finalized = false;
+		if (currentSessionId) {
+			state.activeSessionId = currentSessionId;
+			state.sessionFile = currentSessionFile;
+		}
 		writeSessionState(ctx.cwd, state);
 	});
 
@@ -888,7 +898,7 @@ export default function memoryProtocolExtension(pi: ExtensionAPI) {
 		if (currentSessionId) {
 			const state = readSessionState(ctx.cwd);
 			if (!state.finalized) {
-				await finalizeSession(ctx, currentSessionId);
+				await finalizeSession(ctx, currentSessionId, { sessionFile: currentSessionFile });
 			}
 		}
 	});
@@ -901,7 +911,7 @@ export default function memoryProtocolExtension(pi: ExtensionAPI) {
 				ctx.ui.notify("No active session", "warning");
 				return;
 			}
-			await finalizeSession(ctx, currentSessionId);
+			await finalizeSession(ctx, currentSessionId, { sessionFile: currentSessionFile });
 			ctx.shutdown();
 		},
 	});
@@ -934,6 +944,17 @@ export default function memoryProtocolExtension(pi: ExtensionAPI) {
 				const currentMemory = readProjectMemory(ctx.cwd);
 				const updatedMemory = applyMemoryPatch(currentMemory, output.memoryPatch);
 				writeProjectMemory(ctx.cwd, updatedMemory);
+
+				// Check if compaction needed
+				await checkAndCompactMemory(ctx.cwd, ctx);
+
+				// Mark session as finalized but keep active session metadata
+				writeSessionState(ctx.cwd, {
+					activeSessionId: currentSessionId,
+					sessionFile: currentSessionFile,
+					lastEventTs: Date.now(),
+					finalized: true,
+				});
 
 				ctx.ui.notify("Checkpoint saved", "info");
 			}

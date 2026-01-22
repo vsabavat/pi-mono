@@ -75,6 +75,8 @@ const IDLE_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
 const PROJECT_MEMORY_MAX_TOKENS = 4000; // ~16KB
 const CHUNK_SIZE_CHARS = 30000; // ~7.5k tokens per chunk
 const MAX_DIRECT_SUMMARIZE_CHARS = 50000; // Above this, use chunked summarization
+const MAX_SESSION_SUMMARIES_IN_PROMPT = Number.POSITIVE_INFINITY; // Use all summaries
+const RECENT_CONTEXT_MAX_TOKENS = 350;
 
 const PROJECT_MEMORY_TEMPLATE = `# Project Memory
 
@@ -167,6 +169,16 @@ Rules:
 
 Return ONLY valid JSON, no markdown code blocks or extra text.`;
 
+const RECENT_CONTEXT_PROMPT = `Condense the following session summaries into a compact recent context block.
+
+Focus on:
+- Current goals and active workstreams
+- Key decisions and constraints
+- Open problems and blockers
+- Next actions that are still relevant
+
+Keep it concise (150-250 words). Output plain text only.`;
+
 // =============================================================================
 // File Helpers
 // =============================================================================
@@ -248,6 +260,70 @@ function writeSessionSummary(cwd: string, summary: SessionSummary): void {
 	ensureMemoryDirs(cwd);
 	const path = join(getSummariesDir(cwd), `${summary.sessionId}.json`);
 	writeFileSync(path, JSON.stringify(summary, null, 2));
+}
+
+function loadRecentSessionSummaries(cwd: string, limit: number): SessionSummary[] {
+	const dir = getSummariesDir(cwd);
+	if (!existsSync(dir)) return [];
+
+	const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+	const summaries: Array<{ summary: SessionSummary; time: number }> = [];
+
+	for (const file of files) {
+		try {
+			const summary = JSON.parse(readFileSync(join(dir, file), "utf-8")) as SessionSummary;
+			const time = Number.isNaN(Date.parse(summary.timestamp)) ? 0 : Date.parse(summary.timestamp);
+			summaries.push({ summary, time });
+		} catch {
+			// Skip malformed summary files
+		}
+	}
+
+	return summaries
+		.sort((a, b) => b.time - a.time)
+		.slice(0, limit)
+		.map((s) => s.summary);
+}
+
+function formatSessionSummaries(summaries: SessionSummary[]): string {
+	return summaries
+		.map((summary) => {
+			const steps = summary.nextSteps?.length
+				? `\nNext steps:\n${summary.nextSteps.map((s) => `- ${s}`).join("\n")}`
+				: "";
+			const tags = summary.retrievalTags?.length ? `\nTags: ${summary.retrievalTags.join(", ")}` : "";
+			return `### Session ${summary.sessionId} (${summary.timestamp})\n${summary.summary}${steps}${tags}`;
+		})
+		.join("\n\n");
+}
+
+async function condenseSessionSummaries(summaries: SessionSummary[], ctx: ExtensionContext): Promise<string> {
+	if (summaries.length === 0) return "";
+
+	const modelWithKey = await getModelWithKey(ctx);
+	if (!modelWithKey) return "";
+	const { model, apiKey } = modelWithKey;
+
+	const summariesText = formatSessionSummaries(summaries);
+	const prompt = `${RECENT_CONTEXT_PROMPT}
+
+Session Summaries:
+${summariesText}`;
+
+	const response = await completeSimple(
+		model,
+		{
+			systemPrompt: "You are a summarizer. Output plain text only.",
+			messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }],
+		},
+		{ maxTokens: RECENT_CONTEXT_MAX_TOKENS, apiKey },
+	);
+
+	return response.content
+		.filter((c): c is { type: "text"; text: string } => c.type === "text")
+		.map((c) => c.text)
+		.join("\n")
+		.trim();
 }
 
 // =============================================================================
@@ -589,7 +665,7 @@ async function generateFinalizationFromConversation(
 	projectMemory: string,
 	ctx: ExtensionContext,
 ): Promise<FinalizationOutput | null> {
-	if (conversation.length < 100) {
+	if (!conversation.trim()) {
 		return null;
 	}
 
@@ -759,7 +835,7 @@ async function finalizePreviousSession(prevState: SessionState, ctx: ExtensionCo
 	ctx.ui.setStatus("memory", ctx.ui.theme.fg("warning", "finalizing prev..."));
 
 	const conversation = getMessagesFromSessionFile(prevState.sessionFile);
-	if (conversation.length < 100) {
+	if (!conversation.trim()) {
 		ctx.ui.setStatus("memory", undefined);
 		return null;
 	}
@@ -805,10 +881,15 @@ export default function memoryProtocolExtension(pi: ExtensionAPI) {
 	let currentSessionId: string | null = null;
 	let currentSessionFile: string | null = null;
 	let resumeBrief: string = "";
+	let recentSummaries: SessionSummary[] = [];
+	let recentContextBlock: string = "";
 
 	// Initialize on session start
 	pi.on("session_start", async (_event, ctx) => {
 		ensureMemoryDirs(ctx.cwd);
+		if (!existsSync(getProjectMemoryPath(ctx.cwd))) {
+			writeProjectMemory(ctx.cwd, PROJECT_MEMORY_TEMPLATE);
+		}
 
 		const sessionId = ctx.sessionManager.getSessionId();
 		currentSessionId = sessionId;
@@ -843,6 +924,9 @@ export default function memoryProtocolExtension(pi: ExtensionAPI) {
 			resumeBrief = await generateResumeBrief(ctx, projectMemory, previousSummary);
 		}
 
+		recentSummaries = loadRecentSessionSummaries(ctx.cwd, MAX_SESSION_SUMMARIES_IN_PROMPT);
+		recentContextBlock = await condenseSessionSummaries(recentSummaries, ctx);
+
 		// Update session state with current session
 		writeSessionState(ctx.cwd, {
 			activeSessionId: sessionId,
@@ -865,6 +949,10 @@ export default function memoryProtocolExtension(pi: ExtensionAPI) {
 			memoryContext += `\n\n<project_memory>\n${projectMemory}\n</project_memory>`;
 		}
 
+		if (recentContextBlock) {
+			memoryContext += `\n\n<recent_context>\n${recentContextBlock}\n</recent_context>`;
+		}
+
 		// Add resume brief on first turn
 		if (resumeBrief) {
 			memoryContext += `\n\n<resume_brief>\n${resumeBrief}\n</resume_brief>`;
@@ -876,7 +964,8 @@ export default function memoryProtocolExtension(pi: ExtensionAPI) {
 				systemPrompt:
 					event.systemPrompt +
 					memoryContext +
-					"\n\nUse the project_memory as your source of truth for project context, constraints, and decisions.",
+					"\n\nUse the project_memory as your source of truth for project context, constraints, and decisions. " +
+					"Recent_context provides condensed history and may omit details.",
 			};
 		}
 	});
@@ -947,6 +1036,9 @@ export default function memoryProtocolExtension(pi: ExtensionAPI) {
 
 				// Check if compaction needed
 				await checkAndCompactMemory(ctx.cwd, ctx);
+
+				recentSummaries = loadRecentSessionSummaries(ctx.cwd, MAX_SESSION_SUMMARIES_IN_PROMPT);
+				recentContextBlock = await condenseSessionSummaries(recentSummaries, ctx);
 
 				// Mark session as finalized but keep active session metadata
 				writeSessionState(ctx.cwd, {

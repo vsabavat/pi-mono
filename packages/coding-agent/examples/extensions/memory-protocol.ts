@@ -77,6 +77,7 @@ const CHUNK_SIZE_CHARS = 30000; // ~7.5k tokens per chunk
 const MAX_DIRECT_SUMMARIZE_CHARS = 50000; // Above this, use chunked summarization
 const MAX_SESSION_SUMMARIES_IN_PROMPT = Number.POSITIVE_INFINITY; // Use all summaries
 const RECENT_CONTEXT_MAX_TOKENS = 350;
+const MIN_FINALIZATION_WORDS = 100;
 
 const PROJECT_MEMORY_TEMPLATE = `# Project Memory
 
@@ -313,7 +314,8 @@ ${summariesText}`;
 	const response = await completeSimple(
 		model,
 		{
-			systemPrompt: "You are a summarizer. Output plain text only.",
+			systemPrompt:
+				"You are a memory summarizer. Capture key details needed to continue work: goals, decisions, constraints, file paths, open issues, and next steps. Be concise, factual, and avoid filler. Output plain text only.",
 			messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }],
 		},
 		{ maxTokens: RECENT_CONTEXT_MAX_TOKENS, apiKey },
@@ -332,6 +334,14 @@ ${summariesText}`;
 
 function estimateTokens(text: string): number {
 	return Math.ceil(text.length / 4);
+}
+
+function countWords(text: string): number {
+	return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function shouldFinalize(conversation: string): boolean {
+	return countWords(conversation) >= MIN_FINALIZATION_WORDS;
 }
 
 function applyMemoryPatch(currentMemory: string, patch: MemoryPatch): string {
@@ -665,7 +675,7 @@ async function generateFinalizationFromConversation(
 	projectMemory: string,
 	ctx: ExtensionContext,
 ): Promise<FinalizationOutput | null> {
-	if (!conversation.trim()) {
+	if (!shouldFinalize(conversation)) {
 		return null;
 	}
 
@@ -741,9 +751,23 @@ async function finalizeSession(
 	sessionId: string,
 	options?: { clearActive?: boolean; sessionFile?: string | null },
 ): Promise<void> {
+	const conversation = getSessionMessages(ctx);
+	if (!shouldFinalize(conversation)) {
+		const clearActive = options?.clearActive !== false;
+		const sessionFile = options?.sessionFile ?? null;
+		writeSessionState(ctx.cwd, {
+			activeSessionId: clearActive ? null : sessionId,
+			sessionFile: clearActive ? null : sessionFile,
+			lastEventTs: Date.now(),
+			finalized: true,
+		});
+		return;
+	}
+
 	ctx.ui.setStatus("memory", ctx.ui.theme.fg("warning", "finalizing..."));
 
-	const output = await generateFinalization(ctx);
+	const projectMemory = readProjectMemory(ctx.cwd);
+	const output = await generateFinalizationFromConversation(conversation, projectMemory, ctx);
 	if (!output) {
 		ctx.ui.setStatus("memory", undefined);
 		return;
@@ -835,7 +859,7 @@ async function finalizePreviousSession(prevState: SessionState, ctx: ExtensionCo
 	ctx.ui.setStatus("memory", ctx.ui.theme.fg("warning", "finalizing prev..."));
 
 	const conversation = getMessagesFromSessionFile(prevState.sessionFile);
-	if (!conversation.trim()) {
+	if (!shouldFinalize(conversation)) {
 		ctx.ui.setStatus("memory", undefined);
 		return null;
 	}
@@ -1049,6 +1073,14 @@ export default function memoryProtocolExtension(pi: ExtensionAPI) {
 				});
 
 				ctx.ui.notify("Checkpoint saved", "info");
+			} else {
+				// Not enough content to summarize, but mark as finalized
+				writeSessionState(ctx.cwd, {
+					activeSessionId: currentSessionId,
+					sessionFile: currentSessionFile,
+					lastEventTs: Date.now(),
+					finalized: true,
+				});
 			}
 
 			ctx.ui.setStatus("memory", ctx.ui.theme.fg("dim", "mem"));

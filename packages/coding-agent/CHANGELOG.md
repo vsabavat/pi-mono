@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `memory-protocol.ts` example extension for hierarchical memory with session summaries, project memory, and automatic finalization
+
 ## [0.49.3] - 2026-01-22
 
 ### Added

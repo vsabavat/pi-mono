@@ -40,6 +40,7 @@ interface SessionState {
 interface SessionSummary {
 	sessionId: string;
 	timestamp: string;
+	header: string;
 	summary: string;
 	memoryPatch: MemoryPatch;
 	retrievalTags: string[];
@@ -56,6 +57,7 @@ interface MemoryPatch {
 }
 
 interface FinalizationOutput {
+	sessionHeader: string;
 	sessionSummary: string;
 	memoryPatch: MemoryPatch;
 	retrievalTags: string[];
@@ -76,7 +78,6 @@ const PROJECT_MEMORY_MAX_TOKENS = 4000; // ~16KB
 const CHUNK_SIZE_CHARS = 30000; // ~7.5k tokens per chunk
 const MAX_DIRECT_SUMMARIZE_CHARS = 50000; // Above this, use chunked summarization
 const MAX_SESSION_SUMMARIES_IN_PROMPT = Number.POSITIVE_INFINITY; // Use all summaries
-const RECENT_CONTEXT_MAX_TOKENS = 350;
 const MIN_FINALIZATION_WORDS = 100;
 
 const PROJECT_MEMORY_TEMPLATE = `# Project Memory
@@ -100,30 +101,52 @@ const PROJECT_MEMORY_TEMPLATE = `# Project Memory
 <!-- Solutions to recurring problems -->
 `;
 
-const FINALIZATION_PROMPT = `You are generating a session finalization output. Analyze the conversation and produce a structured JSON response.
+const FINALIZATION_PROMPT = `You are generating a session finalization output. Analyze the conversation and produce a structured markdown response.
 
-The output must be valid JSON with this exact structure:
-{
-  "sessionSummary": "string (250-400 tokens max): What changed, what was learned, unresolved items, key file references",
-  "memoryPatch": {
-    "invariants": ["items to add/update in Invariants section"],
-    "contracts": ["items to add/update in Contracts section"],
-    "decisions": ["items to add/update in Decisions section"],
-    "activeWorkstreams": ["items to add/update in Active Workstreams section"],
-    "knownIssues": ["items to add/update in Known Issues section"],
-    "debugPlaybook": ["items to add/update in Debug Playbook section"]
-  },
-  "retrievalTags": ["keywords for future search"],
-  "nextSteps": ["actionable prioritized next steps"]
-}
+Use this EXACT format:
+
+## Session Header
+SESSION_HEADER
+Goals: ...
+Key Decisions: ...
+Constraints: ...
+Key Files: ...
+Open Issues: ...
+Next Steps: ...
+
+## Session Summary
+[250-400 tokens max: What changed, what was learned, unresolved items, key file references]
+
+## Memory Patch
+### Invariants
+- ...
+### Contracts
+- ...
+### Decisions
+- ...
+### Active Workstreams
+- ...
+### Known Issues
+- ...
+### Debug Playbook
+- ...
+
+## Retrieval Tags
+- tag-one
+- tag-two
+
+## Next Steps
+1. ...
+2. ...
 
 Rules:
+- Use 'none' for any empty header field
 - sessionSummary: Focus on outcomes and learnings, not play-by-play
 - memoryPatch: Only include sections that need updates. Each item should include "why it matters" context
 - retrievalTags: 3-5 specific keywords (file names, concepts, error types)
 - nextSteps: 2-4 concrete, actionable items
 
-Return ONLY valid JSON, no markdown code blocks or extra text.`;
+Return ONLY the markdown, no extra commentary.`;
 
 const RESUME_PROMPT = `Based on the project memory and previous session summary below, generate a brief resume statement.
 
@@ -147,38 +170,50 @@ Output a concise summary (150-250 words). Do not include JSON formatting.`;
 
 const MERGE_SUMMARIES_PROMPT = `You have multiple chunk summaries from a long session. Merge them into a single coherent finalization output.
 
-The output must be valid JSON with this exact structure:
-{
-  "sessionSummary": "string (250-400 tokens max): Unified summary of what changed, what was learned, unresolved items, key file references",
-  "memoryPatch": {
-    "invariants": ["items to add/update in Invariants section"],
-    "contracts": ["items to add/update in Contracts section"],
-    "decisions": ["items to add/update in Decisions section"],
-    "activeWorkstreams": ["items to add/update in Active Workstreams section"],
-    "knownIssues": ["items to add/update in Known Issues section"],
-    "debugPlaybook": ["items to add/update in Debug Playbook section"]
-  },
-  "retrievalTags": ["keywords for future search"],
-  "nextSteps": ["actionable prioritized next steps"]
-}
+Use this EXACT format:
+
+## Session Header
+SESSION_HEADER
+Goals: ...
+Key Decisions: ...
+Constraints: ...
+Key Files: ...
+Open Issues: ...
+Next Steps: ...
+
+## Session Summary
+[250-400 tokens max: Unified summary of what changed, what was learned, unresolved items, key file references]
+
+## Memory Patch
+### Invariants
+- ...
+### Contracts
+- ...
+### Decisions
+- ...
+### Active Workstreams
+- ...
+### Known Issues
+- ...
+### Debug Playbook
+- ...
+
+## Retrieval Tags
+- tag-one
+- tag-two
+
+## Next Steps
+1. ...
+2. ...
 
 Rules:
+- Use 'none' for any empty header field
 - Merge overlapping information, don't duplicate
 - Preserve the chronological flow of work
 - Focus on final outcomes, not intermediate steps
 - Include all unique file references and decisions
 
-Return ONLY valid JSON, no markdown code blocks or extra text.`;
-
-const RECENT_CONTEXT_PROMPT = `Condense the following session summaries into a compact recent context block.
-
-Focus on:
-- Current goals and active workstreams
-- Key decisions and constraints
-- Open problems and blockers
-- Next actions that are still relevant
-
-Keep it concise (150-250 words). Output plain text only.`;
+Return ONLY the markdown, no extra commentary.`;
 
 // =============================================================================
 // File Helpers
@@ -272,7 +307,11 @@ function loadRecentSessionSummaries(cwd: string, limit: number): SessionSummary[
 
 	for (const file of files) {
 		try {
-			const summary = JSON.parse(readFileSync(join(dir, file), "utf-8")) as SessionSummary;
+			const raw = JSON.parse(readFileSync(join(dir, file), "utf-8")) as SessionSummary;
+			const summary: SessionSummary = {
+				...raw,
+				header: typeof raw.header === "string" ? raw.header : "",
+			};
 			const time = Number.isNaN(Date.parse(summary.timestamp)) ? 0 : Date.parse(summary.timestamp);
 			summaries.push({ summary, time });
 		} catch {
@@ -286,46 +325,22 @@ function loadRecentSessionSummaries(cwd: string, limit: number): SessionSummary[
 		.map((s) => s.summary);
 }
 
-function formatSessionSummaries(summaries: SessionSummary[]): string {
-	return summaries
-		.map((summary) => {
-			const steps = summary.nextSteps?.length
-				? `\nNext steps:\n${summary.nextSteps.map((s) => `- ${s}`).join("\n")}`
-				: "";
-			const tags = summary.retrievalTags?.length ? `\nTags: ${summary.retrievalTags.join(", ")}` : "";
-			return `### Session ${summary.sessionId} (${summary.timestamp})\n${summary.summary}${steps}${tags}`;
-		})
-		.join("\n\n");
+function truncateText(text: string, maxChars: number): string {
+	if (text.length <= maxChars) return text;
+	return `${text.slice(0, maxChars).trim()}...`;
 }
 
-async function condenseSessionSummaries(summaries: SessionSummary[], ctx: ExtensionContext): Promise<string> {
-	if (summaries.length === 0) return "";
+function buildFallbackHeader(summary: SessionSummary): string {
+	return buildHeaderFromContent(summary.summary, summary.nextSteps ?? []);
+}
 
-	const modelWithKey = await getModelWithKey(ctx);
-	if (!modelWithKey) return "";
-	const { model, apiKey } = modelWithKey;
-
-	const summariesText = formatSessionSummaries(summaries);
-	const prompt = `${RECENT_CONTEXT_PROMPT}
-
-Session Summaries:
-${summariesText}`;
-
-	const response = await completeSimple(
-		model,
-		{
-			systemPrompt:
-				"You are a memory summarizer. Capture key details needed to continue work: goals, decisions, constraints, file paths, open issues, and next steps. Be concise, factual, and avoid filler. Output plain text only.",
-			messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }],
-		},
-		{ maxTokens: RECENT_CONTEXT_MAX_TOKENS, apiKey },
-	);
-
-	return response.content
-		.filter((c): c is { type: "text"; text: string } => c.type === "text")
-		.map((c) => c.text)
-		.join("\n")
-		.trim();
+function formatSessionHeaders(summaries: SessionSummary[]): string {
+	return summaries
+		.map((summary) => {
+			const header = summary.header?.trim() || buildFallbackHeader(summary);
+			return `### Session ${summary.sessionId} (${summary.timestamp})\n${header}`;
+		})
+		.join("\n\n");
 }
 
 // =============================================================================
@@ -342,6 +357,129 @@ function countWords(text: string): number {
 
 function shouldFinalize(conversation: string): boolean {
 	return countWords(conversation) >= MIN_FINALIZATION_WORDS;
+}
+
+function buildHeaderFromContent(summary: string, nextSteps: string[]): string {
+	const goals = summary ? truncateText(summary.replace(/\s+/g, " "), 240) : "none";
+	const next = nextSteps.length ? truncateText(nextSteps.join("; "), 200) : "none";
+	return [
+		"SESSION_HEADER",
+		`Goals: ${goals}`,
+		"Key Decisions: none",
+		"Constraints: none",
+		"Key Files: none",
+		"Open Issues: none",
+		`Next Steps: ${next}`,
+	].join("\n");
+}
+
+function parseBulletItems(lines: string[]): string[] {
+	const items: string[] = [];
+	for (const line of lines) {
+		const trimmed = line.trim();
+		const match = trimmed.match(/^[-*•]\s+(.*)$/);
+		if (match?.[1]) items.push(match[1].trim());
+	}
+	return items;
+}
+
+function parseNumberedItems(lines: string[]): string[] {
+	const items: string[] = [];
+	for (const line of lines) {
+		const trimmed = line.trim();
+		const match = trimmed.match(/^\d+\.\s+(.*)$/);
+		if (match?.[1]) items.push(match[1].trim());
+	}
+	return items;
+}
+
+function splitSections(markdown: string): Map<string, string[]> {
+	const sections = new Map<string, string[]>();
+	const lines = markdown.split(/\r?\n/);
+	let current: string | null = null;
+
+	for (const line of lines) {
+		const headingMatch = line.match(/^##\s+(.+)$/);
+		if (headingMatch) {
+			current = headingMatch[1].trim().toLowerCase();
+			if (!sections.has(current)) sections.set(current, []);
+			continue;
+		}
+		if (current) {
+			sections.get(current)?.push(line);
+		}
+	}
+
+	return sections;
+}
+
+function parseMemoryPatch(sectionLines: string[]): MemoryPatch {
+	const patch: MemoryPatch = {};
+	let current: keyof MemoryPatch | null = null;
+	const mapHeading = (heading: string): keyof MemoryPatch | null => {
+		const normalized = heading.trim().toLowerCase();
+		switch (normalized) {
+			case "invariants":
+				return "invariants";
+			case "contracts":
+				return "contracts";
+			case "decisions":
+				return "decisions";
+			case "active workstreams":
+				return "activeWorkstreams";
+			case "known issues":
+				return "knownIssues";
+			case "debug playbook":
+				return "debugPlaybook";
+			default:
+				return null;
+		}
+	};
+
+	for (const line of sectionLines) {
+		const subheadingMatch = line.match(/^###\s+(.+)$/);
+		if (subheadingMatch) {
+			current = mapHeading(subheadingMatch[1]);
+			if (current && !patch[current]) patch[current] = [];
+			continue;
+		}
+		if (current) {
+			const item = line.match(/^[-*•]\s+(.*)$/);
+			if (item?.[1]) {
+				patch[current]?.push(item[1].trim());
+			}
+		}
+	}
+
+	return patch;
+}
+
+function parseFinalizationMarkdown(text: string): FinalizationOutput {
+	const sections = splitSections(text);
+	const headerLines = sections.get("session header") ?? [];
+	const header = headerLines.join("\n").trim();
+
+	const summaryLines = sections.get("session summary") ?? [];
+	const sessionSummary = summaryLines.join("\n").trim();
+
+	const memoryPatchLines = sections.get("memory patch") ?? [];
+	const memoryPatch = parseMemoryPatch(memoryPatchLines);
+
+	const retrievalLines = sections.get("retrieval tags") ?? [];
+	const retrievalTags = parseBulletItems(retrievalLines);
+
+	const nextStepsLines = sections.get("next steps") ?? [];
+	const nextSteps = [...parseNumberedItems(nextStepsLines), ...parseBulletItems(nextStepsLines)];
+
+	const finalHeader = header || buildHeaderFromContent(sessionSummary, nextSteps);
+
+	return {
+		sessionHeader: finalHeader,
+		sessionSummary,
+		memoryPatch,
+		retrievalTags,
+		nextSteps,
+	};
 }
 
 function applyMemoryPatch(currentMemory: string, patch: MemoryPatch): string {
@@ -650,7 +788,7 @@ ${summariesText}`;
 	const response = await completeSimple(
 		model,
 		{
-			systemPrompt: "You are a session finalization assistant. Output only valid JSON.",
+			systemPrompt: "You are a session finalization assistant. Output only markdown.",
 			messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }],
 		},
 		{ maxTokens: 2048, apiKey },
@@ -661,13 +799,7 @@ ${summariesText}`;
 		.map((c) => c.text)
 		.join("\n");
 
-	let jsonText = text;
-	if (text.includes("```")) {
-		const match = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-		if (match) jsonText = match[1];
-	}
-
-	return JSON.parse(jsonText.trim()) as FinalizationOutput;
+	return parseFinalizationMarkdown(text);
 }
 
 async function generateFinalizationFromConversation(
@@ -716,7 +848,7 @@ ${conversation}`;
 		const response = await completeSimple(
 			model,
 			{
-				systemPrompt: "You are a session finalization assistant. Output only valid JSON.",
+				systemPrompt: "You are a session finalization assistant. Output only markdown.",
 				messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }],
 			},
 			{ maxTokens: 2048, apiKey },
@@ -727,13 +859,7 @@ ${conversation}`;
 			.map((c) => c.text)
 			.join("\n");
 
-		let jsonText = text;
-		if (text.includes("```")) {
-			const match = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-			if (match) jsonText = match[1];
-		}
-
-		return JSON.parse(jsonText.trim()) as FinalizationOutput;
+		return parseFinalizationMarkdown(text);
 	} catch (error) {
 		ctx.ui.notify(`Finalization failed: ${error}`, "error");
 		return null;
@@ -777,6 +903,7 @@ async function finalizeSession(
 	const summary: SessionSummary = {
 		sessionId,
 		timestamp: new Date().toISOString(),
+		header: output.sessionHeader,
 		summary: output.sessionSummary,
 		memoryPatch: output.memoryPatch,
 		retrievalTags: output.retrievalTags,
@@ -876,6 +1003,7 @@ async function finalizePreviousSession(prevState: SessionState, ctx: ExtensionCo
 	const summary: SessionSummary = {
 		sessionId: prevState.activeSessionId!,
 		timestamp: new Date().toISOString(),
+		header: output.sessionHeader,
 		summary: output.sessionSummary,
 		memoryPatch: output.memoryPatch,
 		retrievalTags: output.retrievalTags,
@@ -906,7 +1034,7 @@ export default function memoryProtocolExtension(pi: ExtensionAPI) {
 	let currentSessionFile: string | null = null;
 	let resumeBrief: string = "";
 	let recentSummaries: SessionSummary[] = [];
-	let recentContextBlock: string = "";
+	let sessionHeadersBlock: string = "";
 
 	// Initialize on session start
 	pi.on("session_start", async (_event, ctx) => {
@@ -949,7 +1077,7 @@ export default function memoryProtocolExtension(pi: ExtensionAPI) {
 		}
 
 		recentSummaries = loadRecentSessionSummaries(ctx.cwd, MAX_SESSION_SUMMARIES_IN_PROMPT);
-		recentContextBlock = await condenseSessionSummaries(recentSummaries, ctx);
+		sessionHeadersBlock = formatSessionHeaders(recentSummaries);
 
 		// Update session state with current session
 		writeSessionState(ctx.cwd, {
@@ -973,8 +1101,8 @@ export default function memoryProtocolExtension(pi: ExtensionAPI) {
 			memoryContext += `\n\n<project_memory>\n${projectMemory}\n</project_memory>`;
 		}
 
-		if (recentContextBlock) {
-			memoryContext += `\n\n<recent_context>\n${recentContextBlock}\n</recent_context>`;
+		if (sessionHeadersBlock) {
+			memoryContext += `\n\n<session_headers>\n${sessionHeadersBlock}\n</session_headers>`;
 		}
 
 		// Add resume brief on first turn
@@ -989,7 +1117,7 @@ export default function memoryProtocolExtension(pi: ExtensionAPI) {
 					event.systemPrompt +
 					memoryContext +
 					"\n\nUse the project_memory as your source of truth for project context, constraints, and decisions. " +
-					"Recent_context provides condensed history and may omit details.",
+					"Session_headers provide compact history and may omit details.",
 			};
 		}
 	});
@@ -1046,6 +1174,7 @@ export default function memoryProtocolExtension(pi: ExtensionAPI) {
 				const summary: SessionSummary = {
 					sessionId: currentSessionId,
 					timestamp: new Date().toISOString(),
+					header: output.sessionHeader,
 					summary: output.sessionSummary,
 					memoryPatch: output.memoryPatch,
 					retrievalTags: output.retrievalTags,
@@ -1062,7 +1191,7 @@ export default function memoryProtocolExtension(pi: ExtensionAPI) {
 				await checkAndCompactMemory(ctx.cwd, ctx);
 
 				recentSummaries = loadRecentSessionSummaries(ctx.cwd, MAX_SESSION_SUMMARIES_IN_PROMPT);
-				recentContextBlock = await condenseSessionSummaries(recentSummaries, ctx);
+				sessionHeadersBlock = formatSessionHeaders(recentSummaries);
 
 				// Mark session as finalized but keep active session metadata
 				writeSessionState(ctx.cwd, {

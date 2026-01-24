@@ -1,0 +1,17 @@
+{
+	"name": "pi-midscene-bridge-extension",
+	"private": true,
+	"version": "1.0.0",
+	"type": "module",
+	"pi": {
+		"extensions": ["./src/index.ts"]
+	},
+	"dependencies": {
+		"@midscene/web": "^1.2.2",
+		"dotenv": "^16.6.1"
+	},
+	"devDependencies": {
+		"@midscene/cli": "latest",
+		"tsx": "^4.20.1"
+	}
+}

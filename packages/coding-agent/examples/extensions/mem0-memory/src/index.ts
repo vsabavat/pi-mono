@@ -41,13 +41,13 @@ interface OpenAIEmbedderConfig {
 	model?: string;
 	embeddingDims?: number;
 	apiKey?: string;
-	openaiBaseUrl?: string;
+	baseURL?: string;
 }
 
 interface OpenAILlmConfig {
 	model?: string;
 	apiKey?: string;
-	openaiBaseUrl?: string;
+	baseURL?: string;
 	temperature?: number;
 	maxTokens?: number;
 }
@@ -77,7 +77,7 @@ const DEFAULT_MAX_LOG_CHARS = 4000;
 const STATUS_KEY = "mem0";
 
 const extensionDir = dirname(fileURLToPath(import.meta.url));
-loadEnv({ path: join(extensionDir, "..", ".env") });
+loadEnv({ path: join(extensionDir, "..", ".env"), override: true });
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
@@ -123,6 +123,20 @@ function readEnv(value: string | undefined): string | undefined {
 	if (!value) return undefined;
 	const trimmed = value.trim();
 	return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function readApiKey(): string | undefined {
+	return readEnv(process.env.OPENAI_API_KEY);
+}
+
+function applyOpenAIBaseUrl(): string | undefined {
+	const baseUrl = readEnv(process.env.MEM0_OPENAI_BASE_URL);
+	if (!baseUrl) return undefined;
+	process.env.OPENAI_BASE_URL = baseUrl;
+	if (!process.env.OPENAI_API_BASE) {
+		process.env.OPENAI_API_BASE = baseUrl;
+	}
+	return baseUrl;
 }
 
 function truncate(text: string, maxChars: number): string {
@@ -176,11 +190,13 @@ function buildOpenAIEmbedderConfig(): OpenAIEmbedderConfig | null {
 	const config: OpenAIEmbedderConfig = {};
 	const model = readEnv(process.env.MEM0_EMBEDDER_MODEL);
 	const embeddingDims = parseOptionalIntEnv(process.env.MEM0_EMBEDDER_DIMS);
-	const openaiBaseUrl = readEnv(process.env.MEM0_OPENAI_BASE_URL);
+	const openaiBaseUrl = applyOpenAIBaseUrl();
+	const apiKey = readApiKey();
 
 	if (model) config.model = model;
 	if (embeddingDims !== undefined) config.embeddingDims = embeddingDims;
-	if (openaiBaseUrl) config.openaiBaseUrl = openaiBaseUrl;
+	if (openaiBaseUrl) config.baseURL = openaiBaseUrl;
+	if (apiKey) config.apiKey = apiKey;
 
 	return Object.keys(config).length > 0 ? config : null;
 }
@@ -190,12 +206,14 @@ function buildOpenAILlmConfig(): OpenAILlmConfig | null {
 	const model = readEnv(process.env.MEM0_LLM_MODEL);
 	const temperature = parseOptionalFloatEnv(process.env.MEM0_LLM_TEMPERATURE);
 	const maxTokens = parseOptionalIntEnv(process.env.MEM0_LLM_MAX_TOKENS);
-	const openaiBaseUrl = readEnv(process.env.MEM0_OPENAI_BASE_URL);
+	const openaiBaseUrl = applyOpenAIBaseUrl();
+	const apiKey = readApiKey();
 
 	if (model) config.model = model;
 	if (temperature !== undefined) config.temperature = temperature;
 	if (maxTokens !== undefined) config.maxTokens = maxTokens;
-	if (openaiBaseUrl) config.openaiBaseUrl = openaiBaseUrl;
+	if (openaiBaseUrl) config.baseURL = openaiBaseUrl;
+	if (apiKey) config.apiKey = apiKey;
 
 	return Object.keys(config).length > 0 ? config : null;
 }
@@ -341,6 +359,11 @@ let writeQueue: Promise<void> = Promise.resolve();
 
 async function ensureMemory(ctx: ExtensionContext, config: Mem0Config): Promise<Memory | null> {
 	if (!config.enabled) return null;
+	const apiKey = readApiKey();
+	if (!apiKey) {
+		notifyOnce(ctx, "auth", "OPENAI_API_KEY is empty in mem0 .env");
+		return null;
+	}
 	if (memoryClient) return memoryClient;
 	try {
 		memoryClient = new Memory(buildMemoryInitConfig(config));

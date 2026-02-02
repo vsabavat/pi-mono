@@ -3,7 +3,6 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
-import * as os from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
@@ -28,7 +27,8 @@ interface Mem0SearchEntry {
 interface Mem0Config {
 	enabled: boolean;
 	userId: string;
-	historyDbPath: string;
+	historyDbPath?: string;
+	vectorStoreDimension?: number;
 	maxResults: number;
 	minScore: number;
 	maxContextChars: number;
@@ -53,9 +53,10 @@ interface OpenAILlmConfig {
 }
 
 interface MemoryInitConfig extends Record<string, unknown> {
-	historyDbPath: string;
+	historyDbPath?: string;
 	embedder?: { provider: "openai"; config: OpenAIEmbedderConfig };
 	llm?: { provider: "openai"; config: OpenAILlmConfig };
+	vectorStore?: { provider: "memory"; config: { dimension: number } };
 }
 
 interface ActivePrompt {
@@ -163,20 +164,27 @@ function resolveUserId(cwd: string): string {
 	return envId && envId.length > 0 ? envId : `pi:${resolveProjectId(cwd)}`;
 }
 
-function resolveHistoryDbPath(cwd: string): string {
-	const envPath = process.env.MEM0_HISTORY_DB?.trim();
+function resolveHistoryDbPath(cwd: string): string | undefined {
+	const envPath = readEnv(process.env.MEM0_HISTORY_DB);
 	if (envPath) return envPath;
-	const baseDir = process.env.MEM0_HISTORY_DIR?.trim() || join(os.homedir(), ".pi", "mem0");
+	const baseDir = readEnv(process.env.MEM0_HISTORY_DIR);
+	if (!baseDir) return undefined;
 	ensureDir(baseDir);
 	return join(baseDir, `${resolveProjectId(cwd)}.db`);
 }
 
 function buildConfig(cwd: string): Mem0Config {
 	const enabled = !parseBoolEnv(process.env.MEM0_DISABLED, false);
+	const embedderDims = parseOptionalIntEnv(process.env.MEM0_EMBEDDER_DIMS);
+	const vectorStoreDimsEnv = parseOptionalIntEnv(process.env.MEM0_VECTOR_STORE_DIMS);
+	const vectorStoreDimension =
+		(vectorStoreDimsEnv !== undefined && vectorStoreDimsEnv > 0 ? vectorStoreDimsEnv : undefined) ??
+		(embedderDims !== undefined && embedderDims > 0 ? embedderDims : undefined);
 	return {
 		enabled,
 		userId: resolveUserId(cwd),
 		historyDbPath: resolveHistoryDbPath(cwd),
+		vectorStoreDimension,
 		maxResults: Math.max(1, parseIntEnv(process.env.MEM0_MAX_RESULTS, DEFAULT_MAX_RESULTS)),
 		minScore: parseFloatEnv(process.env.MEM0_MIN_SCORE, DEFAULT_MIN_SCORE),
 		maxContextChars: Math.max(200, parseIntEnv(process.env.MEM0_MAX_CONTEXT_CHARS, DEFAULT_MAX_CONTEXT_CHARS)),
@@ -219,15 +227,21 @@ function buildOpenAILlmConfig(): OpenAILlmConfig | null {
 }
 
 function buildMemoryInitConfig(config: Mem0Config): MemoryInitConfig {
-	const init: MemoryInitConfig = { historyDbPath: config.historyDbPath };
+	const init: MemoryInitConfig = {};
 	const embedderConfig = buildOpenAIEmbedderConfig();
 	const llmConfig = buildOpenAILlmConfig();
 
+	if (config.historyDbPath) {
+		init.historyDbPath = config.historyDbPath;
+	}
 	if (embedderConfig) {
 		init.embedder = { provider: "openai", config: embedderConfig };
 	}
 	if (llmConfig) {
 		init.llm = { provider: "openai", config: llmConfig };
+	}
+	if (config.vectorStoreDimension !== undefined) {
+		init.vectorStore = { provider: "memory", config: { dimension: config.vectorStoreDimension } };
 	}
 
 	return init;

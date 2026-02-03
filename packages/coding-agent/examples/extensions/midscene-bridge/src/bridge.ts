@@ -49,6 +49,7 @@ const DEFAULT_BRIDGE_PORT = 3766;
 const DEFAULT_BRIDGE_HOST = "127.0.0.1";
 const DEFAULT_WAIT_FOR_NAVIGATION_TIMEOUT = 3000;
 const DEFAULT_WAIT_FOR_NETWORK_IDLE_TIMEOUT = 1000;
+const DEFAULT_NEW_TAB_URL = "about:blank";
 const BRIDGE_SCREENSHOT_TIMEOUT_MS = 5000;
 
 function isDisconnectError(error: unknown): boolean {
@@ -167,8 +168,10 @@ function configsMatch(a: BridgeConfig | null, b: BridgeConfig): boolean {
 }
 
 export async function ensureBridge(state: BridgeState, input: BrowserToolInput): Promise<BridgeStatus> {
-	const mode: BrowserConnectMode = input.attach ?? "current_tab";
-	const url = input.url?.trim() || undefined;
+	const mode: BrowserConnectMode = input.attach ?? "new_tab";
+	const rawUrl = input.url?.trim() || undefined;
+	const newTabUrl = rawUrl ?? DEFAULT_NEW_TAB_URL;
+	const url = mode === "new_tab" ? newTabUrl : rawUrl;
 	const config = normalizeConfig(input);
 	const needsReset =
 		input.reset === true ||
@@ -210,10 +213,7 @@ export async function ensureBridge(state: BridgeState, input: BrowserToolInput):
 
 		try {
 			if (mode === "new_tab") {
-				if (!url) {
-					throw new Error("url is required when attach is new_tab");
-				}
-				await agent.connectNewTabWithUrl(url, { forceSameTabNavigation: config.forceSameTabNavigation });
+				await agent.connectNewTabWithUrl(newTabUrl, { forceSameTabNavigation: config.forceSameTabNavigation });
 			} else {
 				await agent.connectCurrentTab({ forceSameTabNavigation: config.forceSameTabNavigation });
 			}

@@ -41,6 +41,8 @@ Or copy the folder under `~/.pi/agent/extensions/` or `.pi/extensions/`.
 - `MEM0_LLM_MAX_TOKENS`: LLM max tokens override (number)
 - `MEM0_OPENAI_BASE_URL`: OpenAI-compatible base URL (applies to embedder + LLM)
 - `MEM0_INCLUDE_SCORES`: Include scores in prompt (`1`/`true`)
+- `MEM0_TIMING`: Log per-event timings to console (`1`/`true`)
+- `MEM0_TIMING_UI`: Show timing notifications in UI (`1`/`true`, implies `MEM0_TIMING`)
 - `MEM0_DISABLED`: Disable all Mem0 calls (`1`/`true`)
 
 ## Behavior

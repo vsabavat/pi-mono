@@ -1,6 +1,6 @@
 # Midscene Browser Bridge Extension
 
-This extension adds a `browser_bridge` tool that lets pi control your active Chrome tab via Midscene Bridge Mode. It is designed for tasks that the CLI cannot complete (web UIs, logged-in flows, etc.).
+This extension adds a `browser_bridge` tool that lets pi control a Chrome tab via Midscene Bridge Mode. It opens a new tab by default; use `attach: "current_tab"` to reuse the active tab. It is designed for tasks that the CLI cannot complete (web UIs, logged-in flows, etc.).
 
 ## Setup
 
@@ -27,12 +27,13 @@ Use `pi -e /path/to/midscene-bridge` or copy it under `.pi/extensions/`.
 ## Runtime modes
 
 `browser_bridge` can run in:
-- `runtime: "bridge"` (default) — connect to the active desktop Chrome tab (viewport snapshots).
+- `runtime: "bridge"` (default) — connect to a new desktop Chrome tab (viewport snapshots). Use `attach: "current_tab"` to target the active tab.
 - `runtime: "playwright"` — launch a Playwright browser (supports full-page screenshots).
 
 Prefer `runtime: "bridge"` and only use Playwright when you need full-page snapshots, an isolated session, or bridge is unavailable.
 Snapshots are included by default; set `snapshot: false` to suppress.
 Snapshots are downscaled (max 448px) for faster LLM review.
+When opening a new tab without `url`, the bridge starts at `about:blank`.
 
 ## Caching
 
@@ -54,6 +55,13 @@ Override per tool call:
 Use browser_bridge with waitForNavigationTimeout 5000 and waitForNetworkIdleTimeout 2000 and steps:
 - act: "open https://example.com"
 ```
+
+## Planning limits
+
+Midscene limits replanning cycles. The extension defaults to `60` unless you set:
+
+- Tool call: `replanningCycleLimit: 80`
+- Env var: `MIDSCENE_REPLANNING_CYCLE_LIMIT=80`
 
 ## Tool usage
 

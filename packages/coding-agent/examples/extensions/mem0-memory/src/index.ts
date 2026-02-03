@@ -35,6 +35,8 @@ interface Mem0Config {
 	maxMemoryChars: number;
 	maxLogChars: number;
 	includeScores: boolean;
+	timingEnabled: boolean;
+	timingToUI: boolean;
 }
 
 interface OpenAIEmbedderConfig {
@@ -69,6 +71,11 @@ interface ActivePrompt {
 
 type Mem0MetadataValue = string | number | boolean;
 type Mem0Metadata = Record<string, Mem0MetadataValue>;
+
+interface TimingEntry {
+	label: string;
+	durationMs: number;
+}
 
 const DEFAULT_MAX_RESULTS = 5;
 const DEFAULT_MIN_SCORE = 0.2;
@@ -118,6 +125,42 @@ function parseBoolEnv(value: string | undefined, fallback: boolean): boolean {
 
 function normalizeWhitespace(text: string): string {
 	return text.replace(/\s+/g, " ").trim();
+}
+
+function startTiming(enabled: boolean): number {
+	return enabled ? Date.now() : 0;
+}
+
+function recordTiming(enabled: boolean, entries: TimingEntry[], label: string, startMs: number): void {
+	if (!enabled) return;
+	entries.push({ label, durationMs: Math.max(0, Date.now() - startMs) });
+}
+
+function formatDuration(durationMs: number): string {
+	return `${Math.max(0, Math.round(durationMs))}ms`;
+}
+
+function formatTimingSummary(entries: TimingEntry[], totalMs?: number): string {
+	const total = totalMs ?? entries.reduce((sum, entry) => sum + entry.durationMs, 0);
+	const details = entries.map((entry) => `${entry.label}=${formatDuration(entry.durationMs)}`).join(", ");
+	return details.length > 0 ? `${formatDuration(total)} (${details})` : formatDuration(total);
+}
+
+function logTiming(
+	ctx: ExtensionContext,
+	config: Mem0Config,
+	label: string,
+	entries: TimingEntry[],
+	totalStart?: number,
+): void {
+	if (!config.timingEnabled) return;
+	const totalMs = totalStart ? Date.now() - totalStart : undefined;
+	const message = `[mem0] ${label}: ${formatTimingSummary(entries, totalMs)}`;
+	if (config.timingToUI && ctx.hasUI) {
+		ctx.ui.notify(message, "info");
+	} else {
+		console.info(message);
+	}
 }
 
 function readEnv(value: string | undefined): string | undefined {
@@ -175,6 +218,8 @@ function resolveHistoryDbPath(cwd: string): string | undefined {
 
 function buildConfig(cwd: string): Mem0Config {
 	const enabled = !parseBoolEnv(process.env.MEM0_DISABLED, false);
+	const timingToUI = parseBoolEnv(process.env.MEM0_TIMING_UI, false);
+	const timingEnabled = parseBoolEnv(process.env.MEM0_TIMING, false) || timingToUI;
 	const embedderDims = parseOptionalIntEnv(process.env.MEM0_EMBEDDER_DIMS);
 	const vectorStoreDimsEnv = parseOptionalIntEnv(process.env.MEM0_VECTOR_STORE_DIMS);
 	const vectorStoreDimension =
@@ -191,6 +236,8 @@ function buildConfig(cwd: string): Mem0Config {
 		maxMemoryChars: Math.max(80, parseIntEnv(process.env.MEM0_MAX_MEMORY_CHARS, DEFAULT_MAX_MEMORY_CHARS)),
 		maxLogChars: Math.max(200, parseIntEnv(process.env.MEM0_MAX_LOG_CHARS, DEFAULT_MAX_LOG_CHARS)),
 		includeScores: parseBoolEnv(process.env.MEM0_INCLUDE_SCORES, false),
+		timingEnabled,
+		timingToUI,
 	};
 }
 
@@ -408,10 +455,25 @@ function notifyOnce(ctx: ExtensionContext, label: string, error: unknown): void 
 	}
 }
 
-function enqueueWrite(task: () => Promise<unknown>, ctx: ExtensionContext): void {
+function enqueueWrite(task: () => Promise<unknown>, ctx: ExtensionContext, config: Mem0Config, label: string): void {
+	const timingEnabled = config.timingEnabled;
+	const queuedAt = startTiming(timingEnabled);
 	writeQueue = writeQueue
 		.then(async () => {
-			await task();
+			if (!timingEnabled) {
+				await task();
+				return;
+			}
+			const entries: TimingEntry[] = [];
+			const startMs = Date.now();
+			entries.push({ label: "queue", durationMs: Math.max(0, startMs - queuedAt) });
+			const taskStart = Date.now();
+			try {
+				await task();
+			} finally {
+				entries.push({ label, durationMs: Math.max(0, Date.now() - taskStart) });
+				logTiming(ctx, config, `write/${label}`, entries, queuedAt);
+			}
 		})
 		.catch((error) => {
 			notifyOnce(ctx, "write", error);
@@ -420,7 +482,10 @@ function enqueueWrite(task: () => Promise<unknown>, ctx: ExtensionContext): void
 
 export default function mem0MemoryExtension(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
+		const sessionStart = Date.now();
 		const config = buildConfig(ctx.cwd);
+		const timingEnabled = config.timingEnabled;
+		const entries: TimingEntry[] = [];
 		activePrompt = null;
 		activeMemoryContext = null;
 		if (!config.enabled) {
@@ -429,16 +494,27 @@ export default function mem0MemoryExtension(pi: ExtensionAPI) {
 			}
 			return;
 		}
+		const ensureStart = startTiming(timingEnabled);
 		await ensureMemory(ctx, config);
+		recordTiming(timingEnabled, entries, "ensure", ensureStart);
+		logTiming(ctx, config, "session_start", entries, sessionStart);
 		if (ctx.hasUI) {
 			ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("dim", "mem0"));
 		}
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
+		const totalStart = Date.now();
 		const config = buildConfig(ctx.cwd);
+		const timingEnabled = config.timingEnabled;
+		const entries: TimingEntry[] = [];
+		const ensureStart = startTiming(timingEnabled);
 		const memory = await ensureMemory(ctx, config);
-		if (!memory) return;
+		recordTiming(timingEnabled, entries, "ensure", ensureStart);
+		if (!memory) {
+			logTiming(ctx, config, "before_agent_start", entries, totalStart);
+			return;
+		}
 
 		promptCounter += 1;
 		const promptId = promptCounter;
@@ -450,12 +526,19 @@ export default function mem0MemoryExtension(pi: ExtensionAPI) {
 			userId: config.userId,
 		};
 
+		const searchStart = startTiming(timingEnabled);
 		try {
 			const results = await searchMem0(memory, event.prompt, config);
+			recordTiming(timingEnabled, entries, "search", searchStart);
+			const formatStart = startTiming(timingEnabled);
 			activeMemoryContext = formatMemoryContext(results, config);
+			recordTiming(timingEnabled, entries, "format", formatStart);
 		} catch (error) {
+			recordTiming(timingEnabled, entries, "search", searchStart);
 			activeMemoryContext = null;
 			notifyOnce(ctx, "search", error);
+		} finally {
+			logTiming(ctx, config, "before_agent_start", entries, totalStart);
 		}
 
 		if (!activeMemoryContext) return;
@@ -465,21 +548,37 @@ export default function mem0MemoryExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("agent_end", async (event, ctx) => {
+		const totalStart = Date.now();
 		const config = buildConfig(ctx.cwd);
+		const timingEnabled = config.timingEnabled;
+		const entries: TimingEntry[] = [];
+		const ensureStart = startTiming(timingEnabled);
 		const memory = await ensureMemory(ctx, config);
-		if (!memory || !activePrompt) return;
-
-		const assistantText = getLastAssistantText(event.messages);
-		const messages = buildMem0Messages(activePrompt, assistantText, config);
-		if (messages.length === 0) {
-			activePrompt = null;
-			activeMemoryContext = null;
+		recordTiming(timingEnabled, entries, "ensure", ensureStart);
+		if (!memory || !activePrompt) {
+			logTiming(ctx, config, "agent_end", entries, totalStart);
 			return;
 		}
 
+		const buildStart = startTiming(timingEnabled);
+		const assistantText = getLastAssistantText(event.messages);
+		const messages = buildMem0Messages(activePrompt, assistantText, config);
+		recordTiming(timingEnabled, entries, "build", buildStart);
+		if (messages.length === 0) {
+			activePrompt = null;
+			activeMemoryContext = null;
+			logTiming(ctx, config, "agent_end", entries, totalStart);
+			return;
+		}
+
+		const metadataStart = startTiming(timingEnabled);
 		const metadata = buildMetadata(ctx, activePrompt, assistantText);
+		recordTiming(timingEnabled, entries, "metadata", metadataStart);
 		const userId = activePrompt.userId;
-		enqueueWrite(() => memory.add(messages, { userId, metadata }), ctx);
+		const enqueueStart = startTiming(timingEnabled);
+		enqueueWrite(() => memory.add(messages, { userId, metadata }), ctx, config, "add");
+		recordTiming(timingEnabled, entries, "enqueue", enqueueStart);
+		logTiming(ctx, config, "agent_end", entries, totalStart);
 
 		activePrompt = null;
 		activeMemoryContext = null;

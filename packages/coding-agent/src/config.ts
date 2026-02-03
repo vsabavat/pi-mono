@@ -102,26 +102,47 @@ export function getPackageDir(): string {
 	return __dirname;
 }
 
+function resolvePackageAssetDir(candidates: string[], requiredFile: string): string | undefined {
+	for (const candidate of candidates) {
+		if (existsSync(join(candidate, requiredFile))) {
+			return candidate;
+		}
+	}
+	return undefined;
+}
+
 /**
  * Get path to built-in themes directory (shipped with package)
  * - For Bun binary: theme/ next to executable
- * - For Node.js (dist/): dist/modes/interactive/theme/
+ * - For Node.js (dist/): dist/theme/ or dist/modes/interactive/theme/
  * - For tsx (src/): src/modes/interactive/theme/
  */
 export function getThemesDir(): string {
 	if (isBunBinary) {
 		return join(dirname(process.execPath), "theme");
 	}
-	// Theme is in modes/interactive/theme/ relative to src/ or dist/
 	const packageDir = getPackageDir();
-	const srcOrDist = existsSync(join(packageDir, "src")) ? "src" : "dist";
-	return join(packageDir, srcOrDist, "modes", "interactive", "theme");
+	const resolved = resolvePackageAssetDir(
+		[
+			join(packageDir, "src", "modes", "interactive", "theme"),
+			join(packageDir, "theme"),
+			join(packageDir, "dist", "modes", "interactive", "theme"),
+			join(packageDir, "modes", "interactive", "theme"),
+		],
+		"dark.json",
+	);
+	if (resolved) {
+		return resolved;
+	}
+	return existsSync(join(packageDir, "src"))
+		? join(packageDir, "src", "modes", "interactive", "theme")
+		: join(packageDir, "theme");
 }
 
 /**
  * Get path to HTML export template directory (shipped with package)
  * - For Bun binary: export-html/ next to executable
- * - For Node.js (dist/): dist/core/export-html/
+ * - For Node.js (dist/): dist/export-html/ or dist/core/export-html/
  * - For tsx (src/): src/core/export-html/
  */
 export function getExportTemplateDir(): string {
@@ -129,8 +150,21 @@ export function getExportTemplateDir(): string {
 		return join(dirname(process.execPath), "export-html");
 	}
 	const packageDir = getPackageDir();
-	const srcOrDist = existsSync(join(packageDir, "src")) ? "src" : "dist";
-	return join(packageDir, srcOrDist, "core", "export-html");
+	const resolved = resolvePackageAssetDir(
+		[
+			join(packageDir, "src", "core", "export-html"),
+			join(packageDir, "export-html"),
+			join(packageDir, "dist", "core", "export-html"),
+			join(packageDir, "core", "export-html"),
+		],
+		"template.html",
+	);
+	if (resolved) {
+		return resolved;
+	}
+	return existsSync(join(packageDir, "src"))
+		? join(packageDir, "src", "core", "export-html")
+		: join(packageDir, "export-html");
 }
 
 /** Get path to package.json */

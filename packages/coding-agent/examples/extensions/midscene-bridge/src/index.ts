@@ -19,11 +19,44 @@ import { type BrowserRunSummary, type BrowserStep, type BrowserToolInput, Browse
 
 const TOOL_NAME = "browser_bridge";
 const MAX_CONNECTION_RETRIES = 1;
+const DEFAULT_REPLANNING_CYCLE_LIMIT = 60;
 
 type BrowserStatus = BridgeStatus | PlaywrightStatus;
 type ToolContent = TextContent | ImageContent;
 
 const textContent = (text: string): TextContent => ({ type: "text", text });
+
+function parsePositiveInt(value: unknown): number | undefined {
+	if (typeof value === "number" && Number.isFinite(value)) {
+		const normalized = Math.floor(value);
+		return normalized > 0 ? normalized : undefined;
+	}
+	if (typeof value === "string") {
+		const parsed = Number.parseInt(value, 10);
+		return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+	}
+	return undefined;
+}
+
+function resolveReplanningCycleLimit(input: BrowserToolInput): number {
+	const inputLimit = parsePositiveInt(input.replanningCycleLimit);
+	if (inputLimit) return inputLimit;
+	const envLimit = parsePositiveInt(process.env.MIDSCENE_REPLANNING_CYCLE_LIMIT);
+	if (envLimit) return envLimit;
+	return DEFAULT_REPLANNING_CYCLE_LIMIT;
+}
+
+function applyReplanningCycleLimit(input: BrowserToolInput): void {
+	const resolved = resolveReplanningCycleLimit(input);
+	process.env.MIDSCENE_REPLANNING_CYCLE_LIMIT = String(resolved);
+}
+
+function formatMidsceneError(message: string): string {
+	if (/replanningCycleLimit/i.test(message)) {
+		return `${message}\nTip: set replanningCycleLimit or MIDSCENE_REPLANNING_CYCLE_LIMIT.`;
+	}
+	return message;
+}
 
 function formatMissingEnv(missing: string[], envPath: string): string {
 	const lines = [
@@ -90,7 +123,7 @@ function buildProgressUpdate(
 		content: [textContent(message)],
 		details: {
 			connected: status?.connected ?? false,
-			mode: status?.mode ?? input.attach ?? "current_tab",
+			mode: status?.mode ?? input.attach ?? "new_tab",
 			url: status?.url ?? input.url,
 			reused: status?.reused ?? false,
 			elapsedMs: Date.now() - startedAt,
@@ -186,6 +219,7 @@ export default function midsceneBridgeExtension(pi: ExtensionAPI) {
 				}
 
 				const input = params as BrowserToolInput;
+				applyReplanningCycleLimit(input);
 				runtime = input.runtime ?? "bridge";
 				const rawSteps = input.steps ?? [];
 				const plan = input.plan;
@@ -378,7 +412,7 @@ export default function midsceneBridgeExtension(pi: ExtensionAPI) {
 							};
 						}
 						const message = error instanceof Error ? error.message : String(error);
-						const content: ToolContent[] = [textContent(`Browser task failed: ${message}`)];
+						const content: ToolContent[] = [textContent(`Browser task failed: ${formatMidsceneError(message)}`)];
 						if (snapshotOnError) {
 							content.push(
 								...(await buildSnapshotContent(
@@ -576,7 +610,7 @@ export default function midsceneBridgeExtension(pi: ExtensionAPI) {
 				}
 				if (runtime === "bridge" && snapshotOnError) {
 					const agent = getBridgeAgent(bridgeState);
-					const content: ToolContent[] = [textContent(`Browser task failed: ${message}`)];
+					const content: ToolContent[] = [textContent(`Browser task failed: ${formatMidsceneError(message)}`)];
 					content.push(...(await buildBridgeSnapshotContent(agent, "Browser snapshot after failure.")));
 					return {
 						content,
@@ -585,7 +619,7 @@ export default function midsceneBridgeExtension(pi: ExtensionAPI) {
 					};
 				}
 				return {
-					content: [textContent(`Browser task failed: ${message}`)],
+					content: [textContent(`Browser task failed: ${formatMidsceneError(message)}`)],
 					isError: true,
 					details: { error: message },
 				};

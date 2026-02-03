@@ -275,6 +275,9 @@ export const BrowserToolInputSchema = Type.Object(
 		waitForNetworkIdleTimeout: Type.Optional(
 			Type.Number({ description: "Network idle wait timeout in milliseconds" }),
 		),
+		replanningCycleLimit: Type.Optional(
+			Type.Number({ description: "Max replanning cycles before Midscene aborts the task" }),
+		),
 		headless: Type.Optional(Type.Boolean({ description: "Playwright headless mode" })),
 		viewport: Type.Optional(
 			Type.Object(

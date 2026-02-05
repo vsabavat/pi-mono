@@ -20,6 +20,7 @@ import { type BrowserRunSummary, type BrowserStep, type BrowserToolInput, Browse
 const TOOL_NAME = "browser_bridge";
 const MAX_CONNECTION_RETRIES = 1;
 const DEFAULT_REPLANNING_CYCLE_LIMIT = 60;
+const BRIDGE_RECONNECT_DELAY_MS = 500;
 
 type BrowserStatus = BridgeStatus | PlaywrightStatus;
 type ToolContent = TextContent | ImageContent;
@@ -58,6 +59,10 @@ function formatMidsceneError(message: string): string {
 	return message;
 }
 
+async function delay(ms: number): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function formatMissingEnv(missing: string[], envPath: string): string {
 	const lines = [
 		"Missing Midscene environment values.",
@@ -71,6 +76,11 @@ function formatMissingEnv(missing: string[], envPath: string): string {
 function isConnectionLost(error: unknown): boolean {
 	const message = error instanceof Error ? error.message : String(error);
 	return /connection lost|transport close/i.test(message);
+}
+
+function isServerShuttingDown(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return /server shutting down|kill signal/i.test(message);
 }
 
 function isBridgeCallTimeout(error: unknown): boolean {
@@ -547,6 +557,7 @@ export default function midsceneBridgeExtension(pi: ExtensionAPI) {
 						};
 					} catch (error) {
 						lastError = error;
+						const connectionLost = isConnectionLost(error) || isServerShuttingDown(error);
 						if (isNoTabConnected(error)) {
 							await destroyBridge(bridgeState);
 							if (ctx.hasUI) {
@@ -558,12 +569,13 @@ export default function midsceneBridgeExtension(pi: ExtensionAPI) {
 								details: { error: "no_tab_connected" },
 							};
 						}
-						if (attempt < MAX_CONNECTION_RETRIES && (isConnectionLost(error) || isBridgeCallTimeout(error))) {
+						if (attempt < MAX_CONNECTION_RETRIES && (connectionLost || isBridgeCallTimeout(error))) {
 							const message = isBridgeCallTimeout(error)
 								? "Bridge call timed out. Reconnecting..."
 								: "Connection lost. Reconnecting...";
 							onUpdate?.(buildProgressUpdate(message, resolvedInput, startedAt));
 							await destroyBridge(bridgeState);
+							await delay(BRIDGE_RECONNECT_DELAY_MS);
 							continue;
 						}
 						throw error;
@@ -608,7 +620,8 @@ export default function midsceneBridgeExtension(pi: ExtensionAPI) {
 						details: { error: "bridge_call_timeout", message },
 					};
 				}
-				if (runtime === "bridge" && snapshotOnError) {
+				const connectionLost = isConnectionLost(error) || isServerShuttingDown(error);
+				if (runtime === "bridge" && snapshotOnError && !connectionLost) {
 					const agent = getBridgeAgent(bridgeState);
 					const content: ToolContent[] = [textContent(`Browser task failed: ${formatMidsceneError(message)}`)];
 					content.push(...(await buildBridgeSnapshotContent(agent, "Browser snapshot after failure.")));

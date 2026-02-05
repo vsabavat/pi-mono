@@ -37,6 +37,7 @@ import {
 	compact,
 	estimateContextTokens,
 	generateBranchSummary,
+	generateSummary,
 	prepareCompaction,
 	shouldCompact,
 } from "./compaction/index.js";
@@ -205,6 +206,21 @@ const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "hi
 
 /** Thinking levels including xhigh (for supported models) */
 const THINKING_LEVELS_WITH_XHIGH: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+
+const AUTO_RESET_ERROR_PATTERNS = [
+	/too many images/i,
+	/too many documents/i,
+	/too many attachments/i,
+	/image limit/i,
+	/document limit/i,
+	/attachment limit/i,
+	/bad request/i,
+	/badrequesterror/i,
+	/validation error/i,
+	/invalid request/i,
+	/invalid input/i,
+];
+const AUTO_RESET_SUMMARY_TYPE = "session_summary";
 
 // ============================================================================
 // AgentSession Class
@@ -386,9 +402,15 @@ export class AgentSession {
 			this._lastAssistantMessage = undefined;
 
 			// Check for retryable errors first (overloaded, rate limit, server errors)
-			if (this._isRetryableError(msg)) {
+			const isRetryable = this._isRetryableError(msg);
+			if (isRetryable) {
 				const didRetry = await this._handleRetryableError(msg);
 				if (didRetry) return; // Retry was initiated, don't proceed to compaction
+			}
+
+			if (this._shouldAutoResetOnError(msg, isRetryable)) {
+				await this._startNewSessionAfterError(msg);
+				return;
 			}
 
 			await this._checkCompaction(msg);
@@ -1607,6 +1629,95 @@ export class AgentSession {
 		if (shouldCompact(contextTokens, contextWindow, settings)) {
 			await this._runAutoCompaction("threshold", false);
 		}
+	}
+
+	private _shouldAutoResetOnError(message: AssistantMessage, isRetryable: boolean): boolean {
+		if (message.stopReason !== "error") return false;
+		const errorMessage = message.errorMessage;
+		if (!errorMessage) return false;
+		if (isRetryable) return false;
+		const contextWindow = this.model?.contextWindow ?? 0;
+		if (isContextOverflow(message, contextWindow)) return false;
+		return AUTO_RESET_ERROR_PATTERNS.some((pattern) => pattern.test(errorMessage));
+	}
+
+	private _stripImagesForSummary(messages: AgentMessage[]): { messages: AgentMessage[]; omittedImages: boolean } {
+		let omittedImages = false;
+		const cleaned: AgentMessage[] = messages.map((msg) => {
+			if (msg.role === "user" || msg.role === "toolResult" || msg.role === "custom") {
+				const content = msg.content;
+				if (typeof content === "string") {
+					return msg;
+				}
+				const textBlocks = content.filter((block): block is TextContent => block.type === "text");
+				if (textBlocks.length !== content.length) {
+					omittedImages = true;
+				}
+				if (textBlocks.length === 0) {
+					omittedImages = true;
+					const placeholder: TextContent = { type: "text", text: "(image omitted)" };
+					return {
+						...msg,
+						content: [placeholder],
+					};
+				}
+				return {
+					...msg,
+					content: textBlocks,
+				};
+			}
+			return msg;
+		});
+		return { messages: cleaned, omittedImages };
+	}
+
+	private async _buildAutoResetSummaryMessage(errorMessage: string): Promise<string> {
+		const { messages, omittedImages } = this._stripImagesForSummary(
+			this.sessionManager.buildSessionContext().messages,
+		);
+		let summaryText: string | undefined;
+		let summaryError: string | undefined;
+
+		if (messages.length === 0) {
+			summaryText = "No prior conversation to summarize.";
+		} else if (!this.model) {
+			summaryError = "No model selected for summary.";
+		} else {
+			const apiKey = await this._modelRegistry.getApiKey(this.model);
+			if (!apiKey) {
+				summaryError = `No API key for ${this.model.provider}`;
+			} else {
+				try {
+					const reserveTokens = this.settingsManager.getCompactionSettings().reserveTokens;
+					summaryText = await generateSummary(messages, this.model, reserveTokens, apiKey);
+				} catch (err) {
+					summaryError = err instanceof Error ? err.message : String(err);
+				}
+			}
+		}
+
+		const headerLines = [`New session started after model error.`, `Error: ${errorMessage}`];
+		if (omittedImages) {
+			headerLines.push("Note: images were omitted from the summary.");
+		}
+		const body = summaryText || (summaryError ? `Summary unavailable: ${summaryError}` : "Summary unavailable.");
+		return `${headerLines.join("\n")}\n\n${body}`;
+	}
+
+	private async _startNewSessionAfterError(message: AssistantMessage): Promise<void> {
+		const errorMessage = message.errorMessage || "Unknown error";
+		this._flushPendingBashMessages();
+		const summaryMessage = await this._buildAutoResetSummaryMessage(errorMessage);
+		const parentSession = this.sessionFile;
+		const success = await this.newSession(parentSession ? { parentSession } : undefined);
+		if (!success) return;
+		this._retryAttempt = 0;
+		this._resolveRetry();
+		await this.sendCustomMessage({
+			customType: AUTO_RESET_SUMMARY_TYPE,
+			content: summaryMessage,
+			display: true,
+		});
 	}
 
 	/**

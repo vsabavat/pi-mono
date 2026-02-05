@@ -1,7 +1,9 @@
-import { PlaywrightAgent } from "@midscene/web/playwright";
-import type { Browser, BrowserContext, Page } from "playwright";
-import { chromium } from "playwright";
+import type { Browser, BrowserContext, Page, PlaywrightAgent, PlaywrightAgentOptions } from "./deps.js";
+import { getPlaywrightAgentModule, getPlaywrightRuntime } from "./deps.js";
 import type { BrowserCache, BrowserConnectMode, BrowserToolInput } from "./types.js";
+
+const { PlaywrightAgent: PlaywrightAgentCtor } = getPlaywrightAgentModule();
+const { chromium } = getPlaywrightRuntime();
 
 type PlaywrightConfig = {
 	headless: boolean;
@@ -115,14 +117,15 @@ function cacheMatches(a?: BrowserCache, b?: BrowserCache): boolean {
 }
 
 async function createAgentForPage(page: Page, config: PlaywrightConfig): Promise<PlaywrightAgent> {
-	return new PlaywrightAgent(page, {
+	const options: PlaywrightAgentOptions = {
 		generateReport: config.generateReport,
 		cache: config.cache,
 		cacheId: config.cacheId,
 		forceSameTabNavigation: config.forceSameTabNavigation,
 		waitForNavigationTimeout: config.waitForNavigationTimeout,
 		waitForNetworkIdleTimeout: config.waitForNetworkIdleTimeout,
-	});
+	};
+	return new PlaywrightAgentCtor(page, options);
 }
 
 export async function ensurePlaywright(state: PlaywrightState, input: BrowserToolInput): Promise<PlaywrightStatus> {

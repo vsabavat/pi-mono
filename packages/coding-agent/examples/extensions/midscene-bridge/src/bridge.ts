@@ -1,6 +1,9 @@
 import { createServer } from "node:net";
-import { AgentOverChromeBridge, killRunningServer } from "@midscene/web/bridge-mode";
+import type { BridgeAgent, BridgeAgentOptions } from "./deps.js";
+import { getBridgeModule } from "./deps.js";
 import type { BrowserCache, BrowserConnectMode, BrowserToolInput } from "./types.js";
+
+const { AgentOverChromeBridge, killRunningServer } = getBridgeModule();
 
 type BridgeConfig = {
 	generateReport: boolean;
@@ -17,7 +20,7 @@ type BridgeConfig = {
 };
 
 type BridgeState = {
-	agent: AgentOverChromeBridge | null;
+	agent: BridgeAgent | null;
 	mode: BrowserConnectMode | null;
 	url: string | null;
 	config: BridgeConfig | null;
@@ -192,7 +195,7 @@ export async function ensureBridge(state: BridgeState, input: BrowserToolInput):
 		if (!available) {
 			throw new Error(`EADDRINUSE: bridge port ${port} is already in use`);
 		}
-		const agentOptions = {
+		const agentOptions: BridgeAgentOptions = {
 			generateReport: config.generateReport,
 			cache: config.cache,
 			cacheId: config.cacheId,
@@ -203,7 +206,7 @@ export async function ensureBridge(state: BridgeState, input: BrowserToolInput):
 			port: config.port,
 			closeNewTabsAfterDisconnect: config.closeNewTabsAfterDisconnect,
 			closeConflictServer: config.closeConflictServer,
-		} as ConstructorParameters<typeof AgentOverChromeBridge>[0];
+		};
 		const agent = new AgentOverChromeBridge(agentOptions);
 		suppressStatusMessageErrors(agent);
 		state.agent = agent;
@@ -254,7 +257,7 @@ export async function destroyBridge(state: BridgeState, closeTabsOverride?: bool
 	state.config = null;
 }
 
-export function getBridgeAgent(state: BridgeState): AgentOverChromeBridge | null {
+export function getBridgeAgent(state: BridgeState): BridgeAgent | null {
 	return state.agent;
 }
 
@@ -262,7 +265,7 @@ type AgentWithPage = { page?: unknown };
 type BridgePageWithScreenshot = { screenshotBase64: () => Promise<string> };
 type BridgePageWithStatusMessage = { showStatusMessage: (message: string) => Promise<unknown> };
 
-function getAgentPage(agent: AgentOverChromeBridge): unknown {
+function getAgentPage(agent: BridgeAgent): unknown {
 	return (agent as AgentWithPage).page;
 }
 
@@ -279,7 +282,7 @@ function hasScreenshotBase64(page: unknown): page is BridgePageWithScreenshot {
 	return typeof (page as { screenshotBase64?: unknown }).screenshotBase64 === "function";
 }
 
-function suppressStatusMessageErrors(agent: AgentOverChromeBridge): void {
+function suppressStatusMessageErrors(agent: BridgeAgent): void {
 	const page = getAgentPage(agent);
 	if (!hasShowStatusMessage(page)) return;
 	const original = page.showStatusMessage.bind(page);
@@ -319,7 +322,7 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
 	}
 }
 
-export async function takeBridgeScreenshot(agent: AgentOverChromeBridge): Promise<BridgeScreenshot | null> {
+export async function takeBridgeScreenshot(agent: BridgeAgent): Promise<BridgeScreenshot | null> {
 	const page = getAgentPage(agent);
 	if (!hasScreenshotBase64(page)) return null;
 	try {

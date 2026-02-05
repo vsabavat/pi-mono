@@ -1,5 +1,7 @@
 import type { ImageContent } from "@mariozechner/pi-ai";
-import { createImgBase64ByFormat, imageInfoOfBase64, parseBase64, resizeImgBase64 } from "@midscene/shared/img";
+import { getImageModule } from "./deps.js";
+
+const { createImgBase64ByFormat, imageInfoOfBase64, parseBase64, resizeImgBase64 } = getImageModule();
 
 type SnapshotResizeOptions = {
 	maxWidth: number;

@@ -6,11 +6,15 @@ Step types: `act`, `wait_for`, `assert`, `tap`, `input`, `scroll`, `hover`, `num
 
 Defaults:
 - `attach: current_tab`; `new_tab` requires `url`.
-- `runtime: "bridge"`; only use `runtime: "playwright"` when you need full-page snapshots, an isolated session, or bridge is unavailable.
+- `runtime: "bridge"` by default.
 - Snapshots are included by default; set `snapshot: false` to suppress.
 - Snapshots are downscaled (max 448px) for faster LLM review.
 
 Guidelines:
+- For login-required sites, prefer `runtime: "bridge"`.
+- For research/browse/search on `google.com`, prefer `runtime: "playwright"`; if it fails, fall back to bridge.
+- For downloads, prefer `runtime: "bridge"`.
+- Use `runtime: "playwright"` when you need full-page snapshots or an isolated session.
 - Use short, concrete locators for `tap`/`hover`/`input` (visible label or aria label).
 - Use `wait_for` before interacting.
 - Use `query` to list candidates, then `tap` the exact value returned.

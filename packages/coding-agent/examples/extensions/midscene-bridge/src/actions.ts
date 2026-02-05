@@ -1,20 +1,5 @@
-import type { AgentOverChromeBridge } from "@midscene/web/bridge-mode";
+import type { MidsceneAgent } from "./deps.js";
 import type { BrowserStep, BrowserStepResult } from "./types.js";
-
-type MidsceneAgent = Pick<
-	AgentOverChromeBridge,
-	| "aiAct"
-	| "aiWaitFor"
-	| "aiAssert"
-	| "aiTap"
-	| "aiHover"
-	| "aiInput"
-	| "aiScroll"
-	| "aiNumber"
-	| "aiString"
-	| "aiBoolean"
-	| "aiQuery"
->;
 
 type RunOptions = {
 	onUpdate?: (message: string) => void;

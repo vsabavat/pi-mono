@@ -411,6 +411,80 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Patches the Memory client's LLM to work around response_format issues with Claude models.
+ * The NVIDIA LLM proxy returns empty {} when response_format: { type: 'json_object' } is used
+ * with Claude models. This patch removes the response_format and extracts JSON from markdown
+ * code blocks in the response instead.
+ */
+function patchMemoryLlmForClaude(memory: Memory): void {
+	const llm = (memory as unknown as { llm?: { openai?: unknown; model?: string; generateResponse?: unknown } }).llm;
+	if (!llm || !llm.openai) return;
+
+	const openai = llm.openai as {
+		chat: {
+			completions: {
+				create: (params: {
+					messages: Array<{ role: string; content: string }>;
+					model: string;
+					tools?: unknown;
+					tool_choice?: string;
+				}) => Promise<{
+					choices: Array<{
+						message: {
+							content: string | null;
+							role: string;
+							tool_calls?: Array<{
+								function: { name: string; arguments: string };
+							}>;
+						};
+					}>;
+				}>;
+			};
+		};
+	};
+
+	llm.generateResponse = async (
+		messages: Array<{ role: string; content: string }>,
+		responseFormat?: { type: string },
+		tools?: unknown,
+	): Promise<string | { content: string; role: string; toolCalls?: Array<{ name: string; arguments: string }> }> => {
+		const completion = await openai.chat.completions.create({
+			messages: messages.map((msg: { role: string; content: string }) => ({
+				role: msg.role,
+				content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
+			})),
+			model: llm.model || "gpt-4",
+			...(tools ? { tools: tools as unknown[], tool_choice: "auto" as const } : {}),
+		});
+
+		const response = completion.choices[0].message;
+
+		if (response.tool_calls) {
+			return {
+				content: response.content || "",
+				role: response.role,
+				toolCalls: response.tool_calls.map((call) => ({
+					name: call.function.name,
+					arguments: call.function.arguments,
+				})),
+			};
+		}
+
+		let content = response.content || "";
+
+		// If we expected JSON, try to extract it from markdown code blocks
+		if (responseFormat?.type === "json_object" && content) {
+			const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
+			if (jsonMatch) {
+				content = jsonMatch[1].trim();
+			}
+		}
+
+		return content;
+	};
+}
+
 let memoryClient: Memory | null = null;
 let promptCounter = 0;
 let activePrompt: ActivePrompt | null = null;
@@ -428,6 +502,8 @@ async function ensureMemory(ctx: ExtensionContext, config: Mem0Config): Promise<
 	if (memoryClient) return memoryClient;
 	try {
 		memoryClient = new Memory(buildMemoryInitConfig(config));
+		// Patch LLM for Claude model compatibility with NVIDIA proxy
+		patchMemoryLlmForClaude(memoryClient);
 		return memoryClient;
 	} catch (error) {
 		notifyOnce(ctx, "init", error);

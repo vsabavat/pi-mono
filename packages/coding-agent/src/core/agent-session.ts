@@ -1123,6 +1123,16 @@ export class AgentSession {
 		return this._steeringMessages.length + this._followUpMessages.length;
 	}
 
+	private hasAgentPendingMessages(): boolean {
+		const agent = this.agent as Agent & {
+			hasPendingMessages?: () => boolean;
+			hasQueuedMessages?: () => boolean;
+		};
+		if (agent.hasPendingMessages) return agent.hasPendingMessages();
+		if (agent.hasQueuedMessages) return agent.hasQueuedMessages();
+		return this.pendingMessageCount > 0;
+	}
+
 	/** Get pending steering messages (read-only) */
 	getSteeringMessages(): readonly string[] {
 		return this._steeringMessages;
@@ -1839,7 +1849,7 @@ export class AgentSession {
 				setTimeout(() => {
 					this.agent.continue().catch(() => {});
 				}, 100);
-			} else if (this.agent.hasQueuedMessages()) {
+			} else if (this.hasAgentPendingMessages()) {
 				// Auto-compaction can complete while follow-up/steering/custom messages are waiting.
 				// Kick the loop so queued messages are actually delivered.
 				setTimeout(() => {

@@ -1044,6 +1044,13 @@ export class DefaultPackageManager implements PackageManager {
 			return gitParsed;
 		}
 
+		// Backward compatibility: accept git host/path shorthand without `git:` prefix.
+		// Example: `github.com/user/repo` (and optional @ref suffix).
+		const legacyGitParsed = parseGitUrl(`git:${source}`);
+		if (legacyGitParsed) {
+			return legacyGitParsed;
+		}
+
 		return { type: "local", path: source };
 	}
 

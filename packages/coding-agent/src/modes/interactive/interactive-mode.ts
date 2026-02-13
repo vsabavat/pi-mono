@@ -252,6 +252,20 @@ export class InteractiveMode {
 		return this.session.settingsManager;
 	}
 
+	private setClearOnShrink(enabled: boolean): void {
+		const uiWithSetter = this.ui as TUI & { setClearOnShrink?: (value: boolean) => void };
+		uiWithSetter.setClearOnShrink?.(enabled);
+	}
+
+	private async drainTerminalInput(maxMs = 1000): Promise<void> {
+		const terminalWithDrain = this.ui.terminal as typeof this.ui.terminal & {
+			drainInput?: (maxMs?: number, idleMs?: number) => Promise<void>;
+		};
+		if (terminalWithDrain.drainInput) {
+			await terminalWithDrain.drainInput(maxMs);
+		}
+	}
+
 	constructor(
 		session: AgentSession,
 		private options: InteractiveModeOptions = {},
@@ -259,7 +273,7 @@ export class InteractiveMode {
 		this.session = session;
 		this.version = VERSION;
 		this.ui = new TUI(new ProcessTerminal(), this.settingsManager.getShowHardwareCursor());
-		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
+		this.setClearOnShrink(this.settingsManager.getClearOnShrink());
 		this.headerContainer = new Container();
 		this.chatContainer = new Container();
 		this.pendingMessagesContainer = new Container();
@@ -1411,7 +1425,7 @@ export class InteractiveMode {
 			setHeader: (factory) => this.setExtensionHeader(factory),
 			setTitle: (title) => this.ui.terminal.setTitle(title),
 			custom: (factory, options) => this.showExtensionCustom(factory, options),
-			pasteToEditor: (text) => this.editor.handleInput(`\x1b[200~${text}\x1b[201~`),
+			pasteToEditor: (text) => this.editor.handleInput?.(`\x1b[200~${text}\x1b[201~`),
 			setEditorText: (text) => this.editor.setText(text),
 			getEditorText: () => this.editor.getText(),
 			editor: (title, prefill) => this.showExtensionEditor(title, prefill),
@@ -2597,7 +2611,7 @@ export class InteractiveMode {
 
 		// Drain any in-flight Kitty key release events before stopping.
 		// This prevents escape sequences from leaking to the parent shell over slow SSH.
-		await this.ui.terminal.drainInput(1000);
+		await this.drainTerminalInput(1000);
 
 		this.stop();
 		process.exit(0);
@@ -3146,7 +3160,7 @@ export class InteractiveMode {
 					},
 					onClearOnShrinkChange: (enabled) => {
 						this.settingsManager.setClearOnShrink(enabled);
-						this.ui.setClearOnShrink(enabled);
+						this.setClearOnShrink(enabled);
 					},
 					onCancel: () => {
 						done();
@@ -3781,7 +3795,7 @@ export class InteractiveMode {
 				this.editor.setAutocompleteMaxVisible?.(autocompleteMaxVisible);
 			}
 			this.ui.setShowHardwareCursor(this.settingsManager.getShowHardwareCursor());
-			this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
+			this.setClearOnShrink(this.settingsManager.getClearOnShrink());
 			this.setupAutocomplete(this.fdPath);
 			const runner = this.session.extensionRunner;
 			if (runner) {

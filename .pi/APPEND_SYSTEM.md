@@ -35,3 +35,16 @@ Failure recovery:
 
 External knowledge:
 - If the task requires unknown URLs or flows, use `bash` with `curl https://www.google.com/search?q=...` before starting browser steps.
+
+# Mem0 Memory
+
+When mem0-memory is enabled, it appends a `<mem0_memory>` block to the system prompt and logs system/user/assistant messages to Mem0 at the end of each turn.
+
+Defaults:
+- Uses `OPENAI_API_KEY` unless overridden by `MEM0_OPENAI_BASE_URL`.
+- Stores history in `./memory.db` and `./vector_store.db` unless `MEM0_HISTORY_DIR` or `MEM0_HISTORY_DB` is set.
+
+Guidelines:
+- Prefer `MEM0_HISTORY_DIR=~/.pi/mem0` (or `MEM0_HISTORY_DB`) to keep DBs out of repos.
+- If you change `MEM0_VECTOR_STORE_DIMS`, delete the existing `vector_store.db`.
+- Set `MEM0_DISABLED=1` to disable all Mem0 calls.

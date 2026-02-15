@@ -379,9 +379,11 @@ Content`,
 			expect(parsed.path).toBe("user/repo");
 		});
 
-		it("should treat host/path shorthand as local without git: prefix", async () => {
+		it("should treat host/path shorthand as git via backward compat without git: prefix", async () => {
 			const parsed = (packageManager as any).parseSource("github.com/user/repo");
-			expect(parsed.type).toBe("local");
+			expect(parsed.type).toBe("git");
+			expect(parsed.host).toBe("github.com");
+			expect(parsed.path).toBe("user/repo");
 		});
 
 		it("should parse HTTPS URLs with .git suffix", async () => {

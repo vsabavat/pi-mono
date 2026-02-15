@@ -71,15 +71,19 @@ describe("Package Manager git source parsing", () => {
 		});
 	});
 
-	describe("unsupported without git: prefix", () => {
-		it("should treat git@host:path as local without git: prefix", () => {
+	describe("backward compat without git: prefix", () => {
+		it("should treat git@host:path as git via backward compat without git: prefix", () => {
 			const parsed = (packageManager as any).parseSource("git@github.com:user/repo");
-			expect(parsed.type).toBe("local");
+			expect(parsed.type).toBe("git");
+			expect(parsed.host).toBe("github.com");
+			expect(parsed.path).toBe("user/repo");
 		});
 
-		it("should treat host/path shorthand as local without git: prefix", () => {
+		it("should treat host/path shorthand as git via backward compat without git: prefix", () => {
 			const parsed = (packageManager as any).parseSource("github.com/user/repo");
-			expect(parsed.type).toBe("local");
+			expect(parsed.type).toBe("git");
+			expect(parsed.host).toBe("github.com");
+			expect(parsed.path).toBe("user/repo");
 		});
 	});
 

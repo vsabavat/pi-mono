@@ -10,18 +10,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createJiti } from "@mariozechner/jiti";
-import * as _bundledPiAgentCore from "@mariozechner/pi-agent-core";
-import * as _bundledPiAi from "@mariozechner/pi-ai";
 import type { KeyId } from "@mariozechner/pi-tui";
-import * as _bundledPiTui from "@mariozechner/pi-tui";
-// Static imports of packages that extensions may use.
-// These MUST be static so Bun bundles them into the compiled binary.
-// The virtualModules option then makes them available to extensions.
-import * as _bundledTypebox from "@sinclair/typebox";
 import { getAgentDir, isBunBinary } from "../../config.js";
-// NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
-// avoiding a circular dependency. Extensions can import from @mariozechner/pi-coding-agent.
-import * as _bundledPiCodingAgent from "../../index.js";
 import { createEventBus, type EventBus } from "../event-bus.js";
 import type { ExecOptions } from "../exec.js";
 import { execCommand } from "../exec.js";
@@ -37,14 +27,48 @@ import type {
 	ToolDefinition,
 } from "./types.js";
 
-/** Modules available to extensions via virtualModules (for compiled Bun binary) */
-const VIRTUAL_MODULES: Record<string, unknown> = {
-	"@sinclair/typebox": _bundledTypebox,
-	"@mariozechner/pi-agent-core": _bundledPiAgentCore,
-	"@mariozechner/pi-tui": _bundledPiTui,
-	"@mariozechner/pi-ai": _bundledPiAi,
-	"@mariozechner/pi-coding-agent": _bundledPiCodingAgent,
-};
+// Static imports of packages that extensions may use.
+// These MUST be static so Bun bundles them into the compiled binary.
+// The virtualModules option then makes them available to extensions.
+// In Node.js mode, aliases are used instead so these imports are unnecessary.
+// We guard with isBunBinary to avoid eagerly loading heavy modules during Node.js startup.
+//
+// For Bun binary builds: the bundler sees the import() calls in getVirtualModules()
+// and includes them. At runtime, isBunBinary is true so they're loaded on demand.
+// For Node.js: isBunBinary is false, getVirtualModules() is never called, and
+// aliases resolve to node_modules paths via jiti.
+
+/** Virtual modules for Bun binary, populated lazily on first use */
+let _virtualModules: Record<string, unknown> | undefined;
+
+/**
+ * Get virtual modules for Bun binary mode.
+ * Only called when isBunBinary is true. Loads all bundled packages.
+ */
+async function getVirtualModules(): Promise<Record<string, unknown>> {
+	if (_virtualModules) return _virtualModules;
+
+	const [_bundledTypebox, _bundledPiAgentCore, _bundledPiTui, _bundledPiAi, _bundledPiCodingAgent] = await Promise.all(
+		[
+			import("@sinclair/typebox"),
+			import("@mariozechner/pi-agent-core"),
+			import("@mariozechner/pi-tui"),
+			import("@mariozechner/pi-ai"),
+			// NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
+			// avoiding a circular dependency. Extensions can import from @mariozechner/pi-coding-agent.
+			import("../../index.js"),
+		],
+	);
+
+	_virtualModules = {
+		"@sinclair/typebox": _bundledTypebox,
+		"@mariozechner/pi-agent-core": _bundledPiAgentCore,
+		"@mariozechner/pi-tui": _bundledPiTui,
+		"@mariozechner/pi-ai": _bundledPiAi,
+		"@mariozechner/pi-coding-agent": _bundledPiCodingAgent,
+	};
+	return _virtualModules;
+}
 
 const require = createRequire(import.meta.url);
 
@@ -255,15 +279,23 @@ function createExtensionAPI(
 	return api;
 }
 
-async function loadExtensionModule(extensionPath: string) {
-	const jiti = createJiti(import.meta.url, {
+/** Shared jiti instance (reused across extensions for fsCache benefit) */
+let _sharedJiti: ReturnType<typeof createJiti> | null = null;
+
+async function getSharedJiti(): Promise<ReturnType<typeof createJiti>> {
+	if (_sharedJiti) return _sharedJiti;
+	_sharedJiti = createJiti(import.meta.url, {
 		moduleCache: false,
 		// In Bun binary: use virtualModules for bundled packages (no filesystem resolution)
 		// Also disable tryNative so jiti handles ALL imports (not just the entry point)
 		// In Node.js/dev: use aliases to resolve to node_modules paths
-		...(isBunBinary ? { virtualModules: VIRTUAL_MODULES, tryNative: false } : { alias: getAliases() }),
+		...(isBunBinary ? { virtualModules: await getVirtualModules(), tryNative: false } : { alias: getAliases() }),
 	});
+	return _sharedJiti;
+}
 
+async function loadExtensionModule(extensionPath: string) {
+	const jiti = await getSharedJiti();
 	const module = await jiti.import(extensionPath, { default: true });
 	const factory = module as ExtensionFactory;
 	return typeof factory !== "function" ? undefined : factory;

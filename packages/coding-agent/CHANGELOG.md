@@ -69,6 +69,8 @@
 ### Changed
 
 - `SettingsManager` now uses scoped storage abstraction with per-scope locked read/merge/write persistence for global and project settings.
+- Startup performance: `--help` and `--version` now exit before resource/extension loading, reducing their time from ~1.2s to ~0.46s. `--export` also exits early.
+- Startup performance: extension loader no longer eagerly imports `@mariozechner/pi-ai`, `@mariozechner/pi-tui`, `@sinclair/typebox`, and the full coding-agent barrel at module load time. These are now loaded lazily only when needed (Bun binary mode). Reduces `extensions/loader` import time from ~488ms to ~81ms.
 
 ### Fixed
 

@@ -560,6 +560,31 @@ export async function main(args: string[]) {
 	// First pass: parse args to get --extension paths
 	const firstPass = parseArgs(args);
 
+	// Fast path: --version and --help don't need resource loading or extensions.
+	// Extension flags are discovered during loading, but help output already notes
+	// "Extensions can register additional flags" so basic help is complete.
+	if (firstPass.version) {
+		console.log(VERSION);
+		process.exit(0);
+	}
+	if (firstPass.help) {
+		printHelp();
+		process.exit(0);
+	}
+	if (firstPass.export) {
+		let result: string;
+		try {
+			const outputPath = firstPass.messages.length > 0 ? firstPass.messages[0] : undefined;
+			result = await exportFromFile(firstPass.export, outputPath);
+		} catch (error: unknown) {
+			const message = error instanceof Error ? error.message : "Failed to export session";
+			console.error(chalk.red(`Error: ${message}`));
+			process.exit(1);
+		}
+		console.log(`Exported to: ${result}`);
+		process.exit(0);
+	}
+
 	// Early load extensions to discover their CLI flags
 	const cwd = process.cwd();
 	const agentDir = getAgentDir();
@@ -613,16 +638,6 @@ export async function main(args: string[]) {
 		extensionsResult.runtime.flagValues.set(name, value);
 	}
 
-	if (parsed.version) {
-		console.log(VERSION);
-		process.exit(0);
-	}
-
-	if (parsed.help) {
-		printHelp();
-		process.exit(0);
-	}
-
 	if (parsed.listModels !== undefined) {
 		const searchPattern = typeof parsed.listModels === "string" ? parsed.listModels : undefined;
 		await listModels(modelRegistry, searchPattern);
@@ -638,20 +653,6 @@ export async function main(args: string[]) {
 			// Prepend stdin content to messages
 			parsed.messages.unshift(stdinContent);
 		}
-	}
-
-	if (parsed.export) {
-		let result: string;
-		try {
-			const outputPath = parsed.messages.length > 0 ? parsed.messages[0] : undefined;
-			result = await exportFromFile(parsed.export, outputPath);
-		} catch (error: unknown) {
-			const message = error instanceof Error ? error.message : "Failed to export session";
-			console.error(chalk.red(`Error: ${message}`));
-			process.exit(1);
-		}
-		console.log(`Exported to: ${result}`);
-		process.exit(0);
 	}
 
 	if (parsed.mode === "rpc" && parsed.fileArgs.length > 0) {

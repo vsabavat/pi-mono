@@ -623,6 +623,7 @@ There are multiple SDK breaking changes since v0.49.3. For the quickest migratio
 
 ### Added
 
+- Added `memory-protocol.ts` example extension for hierarchical memory with session summaries, project memory, and automatic finalization
 - Session renaming in `/resume` picker via `Ctrl+R` without opening the session ([#863](https://github.com/badlogic/pi-mono/pull/863) by [@svkozak](https://github.com/svkozak))
 - Session selector keybindings are now configurable ([#948](https://github.com/badlogic/pi-mono/pull/948) by [@aos](https://github.com/aos))
 - `disable-model-invocation` frontmatter field for skills to prevent agentic invocation while still allowing explicit `/skill:name` commands ([#927](https://github.com/badlogic/pi-mono/issues/927))

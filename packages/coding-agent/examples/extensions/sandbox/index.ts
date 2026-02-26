@@ -45,8 +45,23 @@ import { SandboxManager, type SandboxRuntimeConfig } from "@anthropic-ai/sandbox
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { type BashOperations, createBashTool } from "@mariozechner/pi-coding-agent";
 
-interface SandboxConfig extends SandboxRuntimeConfig {
+interface SandboxNetworkConfig {
+	allowedDomains?: string[];
+	deniedDomains?: string[];
+}
+
+interface SandboxFilesystemConfig {
+	denyRead?: string[];
+	allowWrite?: string[];
+	denyWrite?: string[];
+}
+
+interface SandboxConfig {
 	enabled?: boolean;
+	network?: SandboxNetworkConfig;
+	filesystem?: SandboxFilesystemConfig;
+	ignoreViolations?: Record<string, string[]>;
+	enableWeakerNestedSandbox?: boolean;
 }
 
 const DEFAULT_CONFIG: SandboxConfig = {
@@ -109,18 +124,11 @@ function deepMerge(base: SandboxConfig, overrides: Partial<SandboxConfig>): Sand
 	if (overrides.filesystem) {
 		result.filesystem = { ...base.filesystem, ...overrides.filesystem };
 	}
-
-	const extOverrides = overrides as {
-		ignoreViolations?: Record<string, string[]>;
-		enableWeakerNestedSandbox?: boolean;
-	};
-	const extResult = result as { ignoreViolations?: Record<string, string[]>; enableWeakerNestedSandbox?: boolean };
-
-	if (extOverrides.ignoreViolations) {
-		extResult.ignoreViolations = extOverrides.ignoreViolations;
+	if (overrides.ignoreViolations) {
+		result.ignoreViolations = overrides.ignoreViolations;
 	}
-	if (extOverrides.enableWeakerNestedSandbox !== undefined) {
-		extResult.enableWeakerNestedSandbox = extOverrides.enableWeakerNestedSandbox;
+	if (overrides.enableWeakerNestedSandbox !== undefined) {
+		result.enableWeakerNestedSandbox = overrides.enableWeakerNestedSandbox;
 	}
 
 	return result;
@@ -253,17 +261,14 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		try {
-			const configExt = config as unknown as {
-				ignoreViolations?: Record<string, string[]>;
-				enableWeakerNestedSandbox?: boolean;
-			};
-
-			await SandboxManager.initialize({
+			const runtimeConfig = {
 				network: config.network,
 				filesystem: config.filesystem,
-				ignoreViolations: configExt.ignoreViolations,
-				enableWeakerNestedSandbox: configExt.enableWeakerNestedSandbox,
-			});
+				ignoreViolations: config.ignoreViolations,
+				enableWeakerNestedSandbox: config.enableWeakerNestedSandbox,
+			} as SandboxRuntimeConfig;
+
+			await SandboxManager.initialize(runtimeConfig);
 
 			sandboxEnabled = true;
 			sandboxInitialized = true;

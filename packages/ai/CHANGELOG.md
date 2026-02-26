@@ -231,6 +231,11 @@
 
 ## [0.50.1] - 2026-01-26
 
+### Changed
+
+- Refactored API streaming dispatch to use an API registry with provider-owned `streamSimple` mapping.
+- Moved environment API key resolution to `env-api-keys.ts` and re-exported it from the package entrypoint.
+
 ### Fixed
 
 - Fixed OpenCode Zen model generation to exclude deprecated models ([#970](https://github.com/badlogic/pi-mono/pull/970) by [@DanielTatarkin](https://github.com/DanielTatarkin))

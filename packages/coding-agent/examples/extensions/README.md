@@ -125,6 +125,7 @@ cp permission-gate.ts ~/.pi/agent/extensions/
 
 | Extension | Description |
 |-----------|-------------|
+| `mem0-memory/` | Logs system/user/assistant messages to Mem0 and injects relevant memories per prompt |
 | `with-deps/` | Extension with its own package.json and dependencies (demonstrates jiti module resolution) |
 | `file-trigger.ts` | Watches a trigger file and injects contents into conversation |
 
